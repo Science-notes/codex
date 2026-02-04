@@ -1,68 +1,115 @@
 library(shiny)
+library(rmarkdown)
 
-compute_cnps_cycle <- function(data, params) {
-  validate(
-    need(!is.null(data) && nrow(data) > 0, "Please upload a dataset to run CNPS.cycle."),
-    need(!is.null(params$cycles) && params$cycles > 0, "Cycles must be greater than 0.")
-  )
+prepare_workdir <- function(script_path, data_files) {
+  workdir <- tempfile("cnps_cycle_")
+  dir.create(workdir, recursive = TRUE, showWarnings = FALSE)
 
-  data.frame(
-    rows = nrow(data),
-    columns = ncol(data),
-    cycles = params$cycles,
-    method = params$method,
-    stringsAsFactors = FALSE
+  file.copy(script_path, file.path(workdir, basename(script_path)))
+
+  if (!is.null(data_files) && nrow(data_files) > 0) {
+    file.copy(data_files$datapath, file.path(workdir, data_files$name))
+  }
+
+  workdir
+}
+
+render_cnps_script <- function(workdir, script_name, output_name) {
+  output_file <- paste0(output_name, ".html")
+  rmarkdown::render(
+    input = file.path(workdir, script_name),
+    output_file = output_file,
+    output_dir = workdir,
+    envir = new.env(parent = globalenv())
   )
+  file.path(workdir, output_file)
 }
 
 ui <- fluidPage(
-  titlePanel("CNPS.cycle Shiny App"),
+  titlePanel("CNPS.cycle Automated Execution"),
   sidebarLayout(
     sidebarPanel(
-      fileInput("dataset", "Upload data (CSV)", accept = c(".csv")),
-      numericInput("cycles", "Number of cycles", value = 10, min = 1, step = 1),
-      selectInput(
-        "method",
-        "Method",
-        choices = c("default" = "default", "robust" = "robust")
+      fileInput("script", "Upload SampleData_AutomatedExecutionScript.Rmd", accept = c(".Rmd")),
+      fileInput(
+        "data_files",
+        "Upload sample data files",
+        multiple = TRUE
       ),
-      actionButton("run", "Run CNPS.cycle", class = "btn-primary")
+      textInput("output_name", "Output HTML name", value = "CNPS_cycle_report"),
+      actionButton("run", "Run script", class = "btn-primary"),
+      helpText("Tip: use the release assets from CNPS.cycle v1.0.0.")
     ),
     mainPanel(
-      h4("Run summary"),
-      tableOutput("summary"),
-      h4("Notes"),
-      verbatimTextOutput("notes")
+      h4("Uploaded files"),
+      tableOutput("uploads"),
+      h4("Run status"),
+      verbatimTextOutput("status"),
+      downloadButton("download_report", "Download report")
     )
   )
 )
 
 server <- function(input, output, session) {
-  dataset <- reactive({
-    req(input$dataset)
-    read.csv(input$dataset$datapath, stringsAsFactors = FALSE)
-  })
-
-  params <- reactive({
-    list(cycles = input$cycles, method = input$method)
+  output$uploads <- renderTable({
+    req(input$script)
+    files <- rbind(
+      data.frame(
+        type = "Rmd",
+        name = input$script$name,
+        stringsAsFactors = FALSE
+      ),
+      if (!is.null(input$data_files)) {
+        data.frame(
+          type = "Data",
+          name = input$data_files$name,
+          stringsAsFactors = FALSE
+        )
+      }
+    )
+    files
   })
 
   result <- eventReactive(input$run, {
-    compute_cnps_cycle(dataset(), params())
-  })
+    req(input$script)
+    workdir <- prepare_workdir(input$script$datapath, input$data_files)
+    script_name <- basename(input$script$datapath)
+    output_name <- ifelse(nzchar(input$output_name), input$output_name, "CNPS_cycle_report")
 
-  output$summary <- renderTable({
-    req(result())
-    result()
-  })
-
-  output$notes <- renderText({
-    paste(
-      "This Shiny app currently provides a scaffold for the CNPS.cycle workflow.",
-      "Replace compute_cnps_cycle() with the repository's core algorithm once available.",
-      sep = "\n"
+    tryCatch(
+      {
+        output_path <- render_cnps_script(workdir, script_name, output_name)
+        list(success = TRUE, output_path = output_path, workdir = workdir)
+      },
+      error = function(err) {
+        list(success = FALSE, message = conditionMessage(err), workdir = workdir)
+      }
     )
   })
+
+  output$status <- renderText({
+    req(result())
+    if (result()$success) {
+      paste(
+        "Render completed.",
+        paste("Output:", basename(result()$output_path)),
+        sep = "\n"
+      )
+    } else {
+      paste("Render failed:", result()$message)
+    }
+  })
+
+  output$download_report <- downloadHandler(
+    filename = function() {
+      req(result())
+      if (result()$success) basename(result()$output_path) else "CNPS_cycle_report.html"
+    },
+    content = function(file) {
+      req(result())
+      validate(need(result()$success, "No report to download."))
+      file.copy(result()$output_path, file)
+    }
+  )
 }
 
 shinyApp(ui = ui, server = server)
