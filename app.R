@@ -625,6 +625,33 @@ server <- function(input, output, session) {
     analysis_complete = FALSE,
     results = list()
   )
+
+  safe_row_total <- function(df, row_idx) {
+    if (is.null(df) || nrow(df) < row_idx || ncol(df) < 2) {
+      return(0)
+    }
+    row_values <- suppressWarnings(as.numeric(unlist(df[row_idx, 2:ncol(df), drop = TRUE])))
+    sum(row_values, na.rm = TRUE)
+  }
+
+  draw_cycle_background <- function(pdf_path) {
+    converted_png <- pdftools::pdf_convert(
+      pdf = pdf_path,
+      format = "png",
+      pages = 1,
+      dpi = 300,
+      verbose = FALSE
+    )
+    bg_img <- png::readPNG(converted_png[1])
+    grid::grid.raster(bg_img, x = 0.5, y = 0.5, width = 1, height = 1, just = "center")
+    unlink(converted_png)
+  }
+
+  safe_close_pdf <- function() {
+    if (grDevices::dev.cur() > 1) {
+      grDevices::dev.off()
+    }
+  }
   
   # 文件上传状态显示
   output$ko_status <- renderUI({
@@ -778,6 +805,15 @@ server <- function(input, output, session) {
   
   # 运行分析
   observeEvent(input$run_analysis, {
+    if (isTRUE(rv$analysis_running)) {
+      showNotification(
+        "分析正在运行中，请勿重复点击。",
+        type = "warning",
+        duration = 4
+      )
+      return()
+    }
+
     # 检查文件是否全部上传
     if (is.null(input$ko_file) || is.null(input$group_file) || 
         is.null(input$gene_file) || is.null(input$tax_file) || 
@@ -1233,44 +1269,44 @@ server <- function(input, output, session) {
                            if (file.exists(C.img)) {
                              tryCatch({
                                C.img <- system.file("data", "Ccyc.pdf", package = "CNPS.cycle")
-                               pdf("Results/Carbon/Gene/Cycle_image/C_cyc_fold_change.pdf",width = 13,height = 7)
-                               gg <- ggplot()
-                               ggbackground(gg,C.img)
+                               pdf(file.path(c_dir, "Gene/Cycle_image/C_cyc_fold_change.pdf"), width = 13, height = 7)
+                               grid::grid.newpage()
+                               draw_cycle_background(C.img)
 
                                # 根据丰度数据添加子图
                                message(sprintf("开始添加子图，丰度数据行数: %d", nrow(C.abundance)))
 
-                               if (nrow(C.abundance) >= 1 && rowSums(C.abundance[1, 2:ncol(C.abundance)]) > 0) {
+                               if (safe_row_total(C.abundance, 1) > 0) {
                                  message("添加ACF子图")
                                  print(ACF, vp = viewport(width = 0.035*Group_numb, height = 0.05,
                                                           x = 0.692, y = 0.87))
                                }
-                               if (nrow(C.abundance) >= 2 && rowSums(C.abundance[2, 2:ncol(C.abundance)]) > 0) {
+                               if (safe_row_total(C.abundance, 2) > 0) {
                                  message("添加ACH4O子图")
                                  print(ACH4O, vp = viewport(width = 0.035*Group_numb, height = 0.05,
                                                             x = 0.5935, y = 0.23))
                                }
-                               if (nrow(C.abundance) >= 3 && rowSums(C.abundance[3, 2:ncol(C.abundance)]) > 0) {
+                               if (safe_row_total(C.abundance, 3) > 0) {
                                  message("添加AR子图")
                                  print(AR, vp = viewport(width = 0.035*Group_numb, height = 0.05,
                                                          x = 0.612, y = 0.64))
                                }
-                               if (nrow(C.abundance) >= 4 && rowSums(C.abundance[4, 2:ncol(C.abundance)]) > 0) {
+                               if (safe_row_total(C.abundance, 4) > 0) {
                                  message("添加AnCF子图")
                                  print(AnCF, vp = viewport(width = 0.035*Group_numb, height = 0.05,
                                                            x = 0.322, y = 0.86))
                                }
-                               if (nrow(C.abundance) >= 5 && rowSums(C.abundance[5, 2:ncol(C.abundance)]) > 0) {
+                               if (safe_row_total(C.abundance, 5) > 0) {
                                  message("添加COo子图")
                                  print(COo, vp = viewport(width = 0.035*Group_numb, height = 0.05,
                                                           x = 0.812, y = 0.385))
                                }
-                               if (nrow(C.abundance) >= 6 && rowSums(C.abundance[6, 2:ncol(C.abundance)]) > 0) {
+                               if (safe_row_total(C.abundance, 6) > 0) {
                                  message("添加Fer子图")
                                  print(Fer, vp = viewport(width = 0.035*Group_numb, height = 0.05,
                                                           x = 0.36, y = 0.45))
                                }
-                               if (nrow(C.abundance) >= 7 && rowSums(C.abundance[7, 2:ncol(C.abundance)]) > 0) {
+                               if (safe_row_total(C.abundance, 7) > 0) {
                                  message("添加Meth子图")
                                  print(Meth, vp = viewport(width = 0.035*Group_numb, height = 0.05,
                                                            x = 0.362, y = 0.34))
@@ -1280,7 +1316,7 @@ server <- function(input, output, session) {
 
                              }, error = function(e) {
                                warning("碳循环通路图生成失败: ", e$message)
-                               dev.off()  # 确保关闭设备
+                               safe_close_pdf()
                              })
                            } else {
                              # 如果没有背景图，只保存各个子图
@@ -1288,7 +1324,7 @@ server <- function(input, output, session) {
                                pdf(file = file.path(c_dir, "Gene/Cycle_image/C_processes.pdf"),
                                    width = 0.6*Group_numb + 2.3, height = 4.5)
                                print(result[[3]])
-                               dev.off()
+                               safe_close_pdf()
                              }
                            }
                          }, error = function(e) {
@@ -1564,15 +1600,24 @@ server <- function(input, output, session) {
                            if (file.exists(N.img)) {
                              pdf(file.path(n_dir, "Gene/Cycle_image/N_cyc_fold_change.pdf"),
                                  width = 13, height = 7)
-                             gg <- ggplot()
-                             ggbackground(gg, N.img)
-                             # 这里需要根据18个氮循环过程添加子图
-                             dev.off()
-                           } else {
+                             grid::grid.newpage()
+                             draw_cycle_background(N.img)
+                             if (length(result) >= 3 && !is.null(result[[3]])) {
+                               print(
+                                 result[[3]],
+                                 vp = viewport(width = 0.42, height = 0.32, x = 0.78, y = 0.2)
+                               )
+                             } else {
+                               warning("氮循环通路图缺少可叠加的数据图层(result[[3]])")
+                             }
+                             safe_close_pdf()
+                           }
+
+                           if (length(result) >= 3 && !is.null(result[[3]])) {
                              pdf(file = file.path(n_dir, "Gene/Cycle_image/N_processes.pdf"),
                                  width = 0.6*Group_numb + 3.8, height = 4.5)
                              print(result[[3]])
-                             dev.off()
+                             safe_close_pdf()
                            }
                          }, error = function(e) {
                            warning("氮循环通路图失败: ", e$message)
